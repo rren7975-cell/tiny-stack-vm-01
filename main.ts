@@ -31,7 +31,13 @@ function np(op){ // [immediate bytes, pops, pushes]; null = unknown opcode
   if(op===0x53)return[0,1,0];
   return null;
 }
-const enc=new TextEncoder();
+// Decode tables built once from np(): the hot loop reads IM/PP/PU directly
+// instead of calling np() (a ~20-branch chain returning a fresh array) and
+// destructuring it on every instruction. IM<0 marks an unknown opcode.
+const IM=new Int8Array(256).fill(-1),PP=new Uint8Array(256),PU=new Uint8Array(256);
+for(let o=0;o<256;o++){const s=np(o);if(s!==null){IM[o]=s[0];PP[o]=s[1];PU[o]=s[2];}}
+// Scratch for PRINT's decimal digits (longest is "-2147483648", 11 bytes).
+const SC=new Uint8Array(11);
 function run(p,inp){
   const n=p.length,D=new Int32Array(256);
   let sp=0;
@@ -43,9 +49,9 @@ function run(p,inp){
   for(;;){
     if(steps===1000000)return done(10);
     if(pc<0||pc>=n)return done(9);
-    const op=p[pc],spec=np(op);
-    if(spec===null)return done(5);
-    const[imm,pops,pushes]=spec;
+    const op=p[pc],imm=IM[op];
+    if(imm<0)return done(5);
+    const pops=PP[op],pushes=PU[op];
     if(pc+imm>=n)return done(9);
     steps++;
     const next=pc+1+imm;
@@ -114,9 +120,16 @@ function run(p,inp){
         break;
       }
       case 0x50:{
-        const bytes=enc.encode(String(D[sp-1]));
-        if(olen+bytes.length>65536)return done(11);
-        sp--;out.set(bytes,olen);olen+=bytes.length;
+        // Decimal digits written by hand into SC: String(v)+TextEncoder
+        // allocated a string and a byte array on every PRINT. The digit
+        // count is known before anything is written, so the output-limit
+        // trap still fires before a single byte lands, exactly as before.
+        let v=D[sp-1];const neg=v<0;let x=neg?-v:v,i=11;
+        do{SC[--i]=48+x%10;x=Math.floor(x/10);}while(x>0);
+        if(neg)SC[--i]=45;
+        const len=11-i;
+        if(olen+len>65536)return done(11);
+        sp--;out.set(SC.subarray(i,11),olen);olen+=len;
         break;
       }
       case 0x51:
